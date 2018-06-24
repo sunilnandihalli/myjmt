@@ -38,24 +38,10 @@ double secant(const std::function<double(double)>& f,double min,double max,doubl
   }
 }
 
-double newton_raphson(const std::function<double(double)>& f,double x0,double tol) {
-  double f0 = f(x0);
-  double h = 1e-9;
-
-  while(fabs(f0)>tol) {
-    double fdash0 = (f(x0+h)-f0)/h;
-    x0-=f0/fdash0;
-    f0 = f(x0);
-  }
-  return x0;
-}
-
 // assuming maximum jerk is constant
-// assuming a negative jerk to begin with
-// assuming there is no maximum acceleration
-double deltaVelocity(double a0,double j,double t1,double t2) {
-  double ret= a0*t1+j*t1*t1*0.5+(a0+j*t1)*(t2-t1)-j*(t2-t1)*(t2-t1)*0.5;
-  return ret;
+// minimum velocity change when changing acceleration
+double deltaVelocity(double a0,double a1) {
+  return (a0+a1)*0.5*fabs(a1-a0)/jmax;
 }
 
 // acceleration and velocity are initial values
@@ -63,117 +49,132 @@ double dist(double v,double a,double j,double t) {
   return v*t+a*t*t*0.5+j*t*t*t/6.0;
 }
 
-double delta_v(double a,double j,double t) {
-  return a*t+j*t*t*0.5;
+// returns <distChange,velChange,jerk_fn,time>
+std::tuple<double,double,std::function<double(double)>,double> distDuringAccelChangeH(double v0,double a0,double a1) {
+  double j = (a1>a0?1:-1)*jmax;
+  double t1 = (a1-a0)/j;
+  double d = dist(v0,a0,j,t1);
+  double dv = deltaVelocity(a0,a1);
+  auto jfn = [t1,j](double t) { if(t>=0 && t<=t1) return j;};
+  return std::make_tuple(d,dv,jfn,t1);
 }
 
+std::tuple<double,double,std::function<double(double)>,double> distDuringAccelChange(double v0,double a0,double a1) {
+      auto x = distDuringAccelChangeH(v0,a0,a1);
+      static char buffer[1000];
+      sprintf(buffer,"distDuringAccelChange : v0 %f a0 %f a1 %f returns dist %f velChange %f deltaT %f",v0,a0,a1,std::get<0>(x),
+	      std::get<1>(x),std::get<3>(x));
+      std::cout<<buffer<<std::endl;
+      return x;
+}
+    
 
-
-double maxAcc(double a0,double dv) {
-  auto f = [](double a0,double dv,double extreme_jerk){
-             return [a0,extreme_jerk,dv]  (double t1) {
-                      double t2 = 2*t1+ a0/extreme_jerk ;// t1 -(a0-j*t1)/j;
-                      double delta_v = deltaVelocity(a0,extreme_jerk,t1,t2);
-                      return (delta_v-dv);
-                    };
-           };
-  double t;
-  auto fpj = f(a0,dv,jmax);
-  auto fnj = f(a0,dv,-jmax);
-  static char buffer[1000];
-  sprintf(buffer,"maxAcc-fpj a0 %f dv %f",a0,dv);
-  double t_fpj = secant(fpj,0,4,1e-9,buffer);
-  sprintf(buffer,"maxAcc-fnj a0 %f dv %f",a0,dv);
-  double t_fnj = secant(fnj,0,4,1e-9,buffer);
-  double a_extreme;
-  if(fabs(fpj(t_fpj))<fabs(fnj(t_fnj))) {
-    a_extreme = a0+jmax*t_fpj;
+// dist,jfn,totaltime
+std::tuple<double,std::function<double(double)>,double> distDuringVelocityChangeH(double a0,double v0,double v1) {
+  double dv = v1-v0;
+  // change in velocities
+  auto direct = distDuringAccelChange(v0,a0,0);
+  auto toAmax = distDuringAccelChange(v0,a0,amax);
+  auto fromAmax = distDuringAccelChange(v0+std::get<1>(toAmax),amax,0);
+  auto toAmin = distDuringAccelChange(v0,a0,amin);
+  auto fromAmin = distDuringAccelChange(v0+std::get<1>(toAmin),amin,0);
+  auto h = [v0,v1](std::tuple<double,double,std::function<double(double)>,double> to,
+						       std::tuple<double,double,std::function<double(double)>,double> from,
+											      double apeak) {
+    double t1(std::get<3>(to)),t3(std::get<3>(from)),d1(std::get<0>(to)),d3(std::get<0>(from));
+    double u1(v0+std::get<1>(to)),u3(v1-std::get<1>(from));
+    double t2 = (u3-u1)/apeak;
+    double d2 = (u1+u3)*0.5*t2;
+    auto jfn1 = std::get<2>(to);
+    auto jfn3 = std::get<2>(from);
+    auto jfn = [jfn1,jfn3,t1,t2,t3](double t) {
+      if(t>=0 && t<t1) {
+	return jfn1(t);
+      } else if (t<=t1+t2) {
+	return 0.0;
+      } else if (t<=t1+t2+t3) {
+	return jfn3(t-t1-t2);
+      }
+    };
+    if(t2>=0) {
+      return std::make_tuple(d1+d2+d3,jfn,t1+t2+t3);
+    } else {
+      throw("error");
+    }
+  };
+  if(fabs(dv-std::get<1>(direct))<1e-6) {
+    return std::make_tuple(std::get<0>(direct),std::get<2>(direct),std::get<3>(direct));
+  } else if (dv<std::get<1>(direct) && (std::get<1>(toAmin)+std::get<1>(fromAmin))<dv) {
+    return h(toAmin,fromAmin,amin);
+  } else if (dv>std::get<1>(direct) && (std::get<1>(toAmax)+std::get<1>(fromAmax))>dv) {
+    return h(toAmax,fromAmax,amax);
   } else {
-    a_extreme = a0-jmax*t_fnj;
+    auto f = [a0,dv](double apeak) {
+      return deltaVelocity(a0,apeak)+deltaVelocity(apeak,0)-dv;
+    };
+    static char buffer[1000];
+    sprintf(buffer,"apeak : a0 %f v0 %f ",a0,v0);
+    double apeak = secant(f,amin,amax,1e-6,buffer);
+    auto toApeak = distDuringAccelChange(v0,a0,apeak);
+    auto fromApeak = distDuringAccelChange(v0+std::get<1>(toApeak),apeak,0);
+    return h(toApeak,fromApeak,apeak);
   }
-  if(a_extreme<=amin)
-    a_extreme = amin;
-  else if(a_extreme>=amax)
-    a_extreme = amax;
-  return a_extreme;
 }
-
+// dist,jfn,totaltime
 std::tuple<double,std::function<double(double)>,double> distDuringVelocityChange(double a0,double v0,double v1) {
-  double a_extreme = maxAcc(a0,v1-v0);
-  double t1 = fabs(a_extreme-a0)/jmax;
-  double t3 = fabs(a_extreme)/jmax;
-  double j1,j3;
-  if(a_extreme>a0) {
-    j1 = jmax;
-    j3 = -jmax;
-  } else {
-    j1 = -jmax;
-    j3 = jmax;
-  }
-  double u1 = v0+delta_v(a0,j1,t1);
-  double u2 = v1-delta_v(a_extreme,j3,t3);
-  double t2 = (u2-u1)/a_extreme;
-  if(t2<0)
-    std::cout<<"ERROR"<<std::endl;
-  auto jfn=[t1,t2,t3,j1,j3](double t) {
-    if(t<0)
-      std::cout<<" argument to jerk function out-of-bound "<<t<<std::endl;
-    else if(t<t1) {
-      return j1;
-    } else if (t<t1+t2) {
-      return 0.0;
-    } else if (t<t1+t2+t3) {
-      return j3;
+      auto x = distDuringVelocityChangeH(a0,v0,v1);
+      static char buffer[1000];
+      sprintf(buffer,"distDuringVelocityChange : a0 %f v0 %f v1 %f returns dist %f totaltime %f",a0,v0,v1,std::get<0>(x),std::get<2>(x));
+      std::cout<<buffer<<std::endl;
+      return x;
     }
-  };
-  return std::make_tuple(dist(v0,a0,j1,t1)+dist(u1,a_extreme,0,t2)+dist(u2,a_extreme,j3,t3),jfn,t1+t2+t3);
-}
-
-// final velocity is assumed to be zero
-double peakVel(double a0,double v0,double vmin,double vmax,double delta_d) {
-  // assuming there is no max or min velocity
-  auto f = [a0,v0,delta_d](double vpeak) {
-    return std::get<0>(distDuringVelocityChange(a0,v0,vpeak))+std::get<0>(distDuringVelocityChange(0,vpeak,0))-delta_d;
-  };
-  static char buffer[1000];
-  sprintf(buffer,"peakVel a0 %f v0 %f delta_d %f",a0,v0,delta_d);
-  double vpeak = secant(f,-200,200,1e-5,buffer);
-  if(vpeak>vmax)
-    vpeak = vmax;
-  else if(vpeak<vmin)
-    vpeak = vmin;
-  return vpeak;  
-}
-
 std::tuple<std::function<double(double)>,double> achieveZeroAcelAndVel(double a0,double v0,double vmin,double vmax,double delta_d) {
-  double v_extreme = peakVel(a0,v0,vmin,vmax,delta_d);
-  auto vChangeData1 = distDuringVelocityChange(a0,v0,v_extreme);
-  auto vChangeData3 = distDuringVelocityChange(0,v_extreme,0);
-  double t3 = std::get<2>(vChangeData3);
-  double t1 = std::get<2>(vChangeData1);
-  double d3 = std::get<0>(vChangeData3);
-  double d1 = std::get<0>(vChangeData1);
-  double d2 = delta_d-d1-d3;
-  double t2 = d2/v_extreme;
-  auto jfn3 = std::get<1>(vChangeData3);
-  auto jfn1 = std::get<1>(vChangeData1);
-  std::cout<<" a0 : "<<a0<<" v0 : "<<v0<<" jmax : "<<jmax <<" vmin : "<<vmin<<" vmax : "<<vmax<<" delta_d : "<<delta_d<<std::endl;
-  std::cout<<"achieveZeroAcelAndVel :  v_extreme : "<<v_extreme<<" t1 : "<<t1<<" t2 : "<<t2<<" t3 : "<<t3
-	   <<" d1 : "<<d1<<" d2 : "<<d2<<" d3 : "<<d3<<std::endl;
-  auto jfn = [t1,t2,t3,jfn1,jfn3](double t) {
-    if(t>=0 && t < t1) {
-      return jfn1(t);
-    } else if (t<=t1+t2) {
-      return 0.0;
-    } else if (t<=t1+t2+t3) {
-      return jfn3(t-t1-t2);
-    }
+  auto direct = distDuringVelocityChange(a0,v0,0);
+  auto toVmin = distDuringVelocityChange(a0,v0,vmin);
+  auto fromVmin = distDuringVelocityChange(0,vmin,0);
+  auto toVmax = distDuringVelocityChange(a0,v0,vmax);
+  auto fromVmax = distDuringVelocityChange(0,vmax,0);
+  double directDist = std::get<0>(direct);
+  double vminDist = std::get<0>(toVmin)+std::get<0>(fromVmin);
+  double vmaxDist = std::get<0>(toVmax)+std::get<0>(fromVmax);
+  auto h = [delta_d](std::tuple<double,std::function<double(double)>,double> to,std::tuple<double,std::function<double(double)>,double> from,double vpeak) {
+    double t3 = std::get<2>(from);
+    double d3 = std::get<0>(from);
+    double t1 = std::get<2>(to);
+    double d1 = std::get<0>(to);
+    double d2 = delta_d-d1-d3;
+    double t2 = d2/vpeak;
+    auto jfn3 = std::get<1>(from);
+    auto jfn1 = std::get<1>(to);
+    auto jfn = [t1,t2,t3,jfn1,jfn3](double t) {
+      if(t>=0 && t < t1) {
+	return jfn1(t);
+      } else if (t<=t1+t2) {
+	return 0.0;
+      } else if (t<=t1+t2+t3) {
+	return jfn3(t-t1-t2);
+      }
+    };
+    return std::make_tuple(jfn,t1+t2+t3);
   };
-  double total_t = t1+t2+t3;
-  return std::make_tuple(jfn,total_t);
+  if(fabs(delta_d-directDist) < 1e-5) {
+    return std::make_tuple(std::get<1>(direct),std::get<2>(direct));
+  } else if(delta_d < directDist && delta_d < vminDist) {
+    return h(toVmin,fromVmin,vmin);
+  } else if(delta_d > directDist && delta_d > vmaxDist) {
+    return h(toVmax,fromVmax,vmax);
+  } else {
+    auto f = [a0,v0,delta_d](double vpeak) {
+      return std::get<0>(distDuringVelocityChange(a0,v0,vpeak))+std::get<0>(distDuringVelocityChange(0,vpeak,0))-delta_d;
+    };
+    static char buffer[1000];
+    sprintf(buffer,"peakVel a0 %f v0 %f delta_d %f",a0,v0,delta_d);
+    double vpeak = secant(f,vmin,vmax,1e-5,buffer);
+    auto toVpeak = distDuringVelocityChange(a0,v0,vpeak);
+    auto fromVpeak = distDuringVelocityChange(0,vpeak,0);
+    return h(toVpeak,fromVpeak,vpeak);
+  }
 }
-
-
 
 void path(double a0,double v0,double vmin,double vmax,double delta_d,const char* fname) {
   auto jfn_t = achieveZeroAcelAndVel(a0,v0,vmin,vmax,delta_d);
@@ -203,9 +204,9 @@ int main() {
   gsl_ieee_env_setup(); /* read GSL_IEEE_MODE */
   double a0(0),dv(5),tol(1e-7);
   //void path(double a0,double v0,double vmin,double vmax,double delta_d,const char* fname) 
-  path(0.0,0.0, 0,23, 100,"trial1.csv");
-  path(5.0,0.0,0,23,100,"trial2.csv");
-  path(10.0,2.0,0,23,100,"trial3.csv");
-  path(10.0,10.0,0,23,100,"trial4.csv");
+  //  path(0.0,0.0, 0,23, 100,"trial1.csv");
+  // path(5.0,0.0,0,23,100,"trial2.csv");
+  // path(10.0,2.0,0,23,100,"trial3.csv");
+  // path(10.0,10.0,0,23,100,"trial4.csv");
   path(0.0,23.0,0,23,50,"trial5.csv");
 }
