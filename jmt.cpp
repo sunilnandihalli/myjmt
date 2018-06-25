@@ -68,7 +68,9 @@ std::tuple<double,double,std::function<double(double)>,double> distDuringAccelCh
       return x;
 }
     
-
+    bool inBetween(double v,double a,double b) {
+      return (v-a)*(v-b)<0;
+    }
 // dist,jfn,totaltime
 std::tuple<double,std::function<double(double)>,double> distDuringVelocityChangeH(double a0,double v0,double v1) {
   double dv = v1-v0;
@@ -104,10 +106,10 @@ std::tuple<double,std::function<double(double)>,double> distDuringVelocityChange
   };
   if(fabs(dv-std::get<1>(direct))<1e-6) {
     return std::make_tuple(std::get<0>(direct),std::get<2>(direct),std::get<3>(direct));
-  } else if (dv<std::get<1>(direct) && (std::get<1>(toAmin)+std::get<1>(fromAmin))<dv) {
-    return h(toAmin,fromAmin,amin);
-  } else if (dv>std::get<1>(direct) && (std::get<1>(toAmax)+std::get<1>(fromAmax))>dv) {
+  } else if (std::get<1>(toAmax)+std::get<1>(fromAmax)<dv) {
     return h(toAmax,fromAmax,amax);
+  } else if (std::get<1>(toAmin)+std::get<1>(fromAmin)>dv) {
+    return h(toAmin,fromAmin,amin);
   } else {
     auto f = [a0,dv](double apeak) {
       return deltaVelocity(a0,apeak)+deltaVelocity(apeak,0)-dv;
@@ -157,12 +159,20 @@ std::tuple<std::function<double(double)>,double> achieveZeroAcelAndVel(double a0
     };
     return std::make_tuple(jfn,t1+t2+t3);
   };
-  if(fabs(delta_d-directDist) < 1e-5) {
+  if(fabs(delta_d-directDist) < 1e-5 || (delta_d<vminDist && !(vmin<0)) || (delta_d>vmaxDist && !(vmax>0))) {
     return std::make_tuple(std::get<1>(direct),std::get<2>(direct));
-  } else if(delta_d < directDist && delta_d < vminDist) {
-    return h(toVmin,fromVmin,vmin);
-  } else if(delta_d > directDist && delta_d > vmaxDist) {
-    return h(toVmax,fromVmax,vmax);
+  } else if(delta_d < vminDist) {
+    if(vmin<0) {
+      return h(toVmin,fromVmin,vmin);
+    } else {
+      throw("should not come here");
+    }
+  } else if(delta_d > vmaxDist) {
+    if(vmax>0) {
+      return h(toVmax,fromVmax,vmax);
+    } else {
+      throw("should not come here");
+    }    
   } else {
     auto f = [a0,v0,delta_d](double vpeak) {
       return std::get<0>(distDuringVelocityChange(a0,v0,vpeak))+std::get<0>(distDuringVelocityChange(0,vpeak,0))-delta_d;
@@ -180,7 +190,7 @@ void path(double a0,double v0,double vmin,double vmax,double delta_d,const char*
   auto jfn_t = achieveZeroAcelAndVel(a0,v0,vmin,vmax,delta_d);
   auto jfn = std::get<0>(jfn_t);
   auto total_t = std::get<1>(jfn_t);
-  std::cout<<"total_t : "<<total_t<<std::endl;
+  std::cout<<"fname : "<<fname<<" total_t : "<<total_t<<std::endl;
   double ap(a0),vp(v0),sp(0);
   double dt = 0.02;
   std::ofstream fout(fname);
@@ -204,9 +214,16 @@ int main() {
   gsl_ieee_env_setup(); /* read GSL_IEEE_MODE */
   double a0(0),dv(5),tol(1e-7);
   //void path(double a0,double v0,double vmin,double vmax,double delta_d,const char* fname) 
-  //  path(0.0,0.0, 0,23, 100,"trial1.csv");
-  // path(5.0,0.0,0,23,100,"trial2.csv");
-  // path(10.0,2.0,0,23,100,"trial3.csv");
-  // path(10.0,10.0,0,23,100,"trial4.csv");
+  path(0.0,0.0, 0,23, 100,"trial1.csv");
+  path(5.0,0.0,0,23,100,"trial2.csv");
+  path(10.0,2.0,0,23,100,"trial3.csv");
+
+  path(10.0,10.0,0,23,100,"trial4.csv");
   path(0.0,23.0,0,23,50,"trial5.csv");
+  path(0.0,0.0,-10,10,10,"trial6.csv");
+  path(0.0,0.0,-10,10,-10,"trial7.csv");
+  path(10,5,-10,10,-20,"trial8.csv");
+  path(-10,-5,-10,10,20,"trial9.csv");
+  
+  
 }
