@@ -68,9 +68,7 @@ std::tuple<double,double,std::function<double(double)>,double> distDuringAccelCh
       return x;
 }
     
-    bool inBetween(double v,double a,double b) {
-      return (v-a)*(v-b)<0;
-    }
+
 // dist,jfn,totaltime
 std::tuple<double,std::function<double(double)>,double> distDuringVelocityChangeH(double a0,double v0,double v1) {
   double dv = v1-v0;
