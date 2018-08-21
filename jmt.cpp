@@ -2,7 +2,6 @@
 #include <functional>
 #include <cmath>
 #include <fstream>
-#include <gsl/gsl_ieee_utils.h>
 
 const double jmax = 10;
 const double amin = -10;
@@ -128,12 +127,13 @@ std::tuple<double,std::function<double(double)>,double> distDuringVelocityChange
       std::cout<<buffer<<std::endl;
       return x;
     }
-std::tuple<std::function<double(double)>,double> achieveZeroAcelAndVel(double a0,double v0,double vmin,double vmax,double delta_d) {
-  auto direct = distDuringVelocityChange(a0,v0,0);
+
+std::tuple<std::function<double(double)>,double> achieveTargetVelocityAndDistanceInShortestTime(double a0,double v0,double v1,double vmin,double vmax,double delta_d) {
+  auto direct = distDuringVelocityChange(a0,v0,v1);
   auto toVmin = distDuringVelocityChange(a0,v0,vmin);
-  auto fromVmin = distDuringVelocityChange(0,vmin,0);
+  auto fromVmin = distDuringVelocityChange(0,vmin,v1);
   auto toVmax = distDuringVelocityChange(a0,v0,vmax);
-  auto fromVmax = distDuringVelocityChange(0,vmax,0);
+  auto fromVmax = distDuringVelocityChange(0,vmax,v1);
   double directDist = std::get<0>(direct);
   double vminDist = std::get<0>(toVmin)+std::get<0>(fromVmin);
   double vmaxDist = std::get<0>(toVmax)+std::get<0>(fromVmax);
@@ -148,44 +148,50 @@ std::tuple<std::function<double(double)>,double> achieveZeroAcelAndVel(double a0
     auto jfn1 = std::get<1>(to);
     auto jfn = [t1,t2,t3,jfn1,jfn3](double t) {
       if(t>=0 && t < t1) {
-	return jfn1(t);
+        return jfn1(t);
       } else if (t<=t1+t2) {
-	return 0.0;
+        return 0.0;
       } else if (t<=t1+t2+t3) {
-	return jfn3(t-t1-t2);
+        return jfn3(t-t1-t2);
       }
     };
     return std::make_tuple(jfn,t1+t2+t3);
   };
-  if(fabs(delta_d-directDist) < 1e-5 || (delta_d<vminDist && !(vmin<0)) || (delta_d>vmaxDist && !(vmax>0))) {
+  if(fabs(delta_d-directDist) < 1e-5 || (delta_d<vminDist && !(vmin<v1)) || (delta_d>vmaxDist && !(vmax>v1))) {
     return std::make_tuple(std::get<1>(direct),std::get<2>(direct));
   } else if(delta_d < vminDist) {
-    if(vmin<0) {
+    if(vmin<v1) {
       return h(toVmin,fromVmin,vmin);
     } else {
       throw("should not come here");
     }
   } else if(delta_d > vmaxDist) {
-    if(vmax>0) {
+    if(vmax>v1) {
       return h(toVmax,fromVmax,vmax);
     } else {
       throw("should not come here");
-    }    
+    }
   } else {
-    auto f = [a0,v0,delta_d](double vpeak) {
-      return std::get<0>(distDuringVelocityChange(a0,v0,vpeak))+std::get<0>(distDuringVelocityChange(0,vpeak,0))-delta_d;
+    auto f = [a0,v0,v1,delta_d](double vpeak) {
+      return std::get<0>(distDuringVelocityChange(a0,v0,vpeak))+std::get<0>(distDuringVelocityChange(0,vpeak,v1))-delta_d;
     };
     static char buffer[1000];
     sprintf(buffer,"peakVel a0 %f v0 %f delta_d %f",a0,v0,delta_d);
     double vpeak = secant(f,vmin,vmax,1e-5,buffer);
     auto toVpeak = distDuringVelocityChange(a0,v0,vpeak);
-    auto fromVpeak = distDuringVelocityChange(0,vpeak,0);
+    auto fromVpeak = distDuringVelocityChange(0,vpeak,v1);
     return h(toVpeak,fromVpeak,vpeak);
   }
 }
 
-void path(double a0,double v0,double vmin,double vmax,double delta_d,const char* fname) {
-  auto jfn_t = achieveZeroAcelAndVel(a0,v0,vmin,vmax,delta_d);
+
+
+std::tuple<std::function<double(double)>,double> achieveZeroAcelAndVel(double a0,double v0,double vmin,double vmax,double delta_d) {
+  return achieveTargetVelocityAndDistanceInShortestTime(a0,v0,0,vmin,vmax,delta_d);
+}
+
+void path(double a0,double v0,double v1,double vmin,double vmax,double delta_d,const char* fname) {
+  auto jfn_t = achieveTargetVelocityAndDistanceInShortestTime(a0,v0,v1,vmin,vmax,delta_d);
   auto jfn = std::get<0>(jfn_t);
   auto total_t = std::get<1>(jfn_t);
   std::cout<<"fname : "<<fname<<" total_t : "<<total_t<<std::endl;
@@ -207,21 +213,32 @@ void path(double a0,double v0,double vmin,double vmax,double delta_d,const char*
   }
 }
 
+void path(double a0,double v0,double vmin,double vmax,double delta_d,const char* fname) {
+  path(a0,v0,0.0,vmin,vmax,delta_d,fname);
+}
+
 int main() {
 
-  gsl_ieee_env_setup(); /* read GSL_IEEE_MODE */
   double a0(0),dv(5),tol(1e-7);
   //void path(double a0,double v0,double vmin,double vmax,double delta_d,const char* fname) 
   path(0.0,0.0, 0,23, 100,"trial1.csv");
   path(5.0,0.0,0,23,100,"trial2.csv");
   path(10.0,2.0,0,23,100,"trial3.csv");
-
   path(10.0,10.0,0,23,100,"trial4.csv");
   path(0.0,23.0,0,23,50,"trial5.csv");
   path(0.0,0.0,-10,10,10,"trial6.csv");
   path(0.0,0.0,-10,10,-10,"trial7.csv");
   path(10,5,-10,10,-20,"trial8.csv");
   path(-10,-5,-10,10,20,"trial9.csv");
-  
-  
+
+  path(0.0,0.0,10, 0,23, 100,"trial01.csv");
+  path(5.0,0.0,10,0,23,100,"trial02.csv");
+  path(10.0,2.0,10,0,23,100,"trial03.csv");
+  path(10.0,10.0,10,0,23,100,"trial04.csv");
+  path(0.0,23.0,10,0,23,50,"trial05.csv");
+  path(0.0,0.0,10,-10,10,10,"trial06.csv");
+  path(0.0,0.0,10,-10,10,-10,"trial07.csv");
+  path(10,5,10,-10,10,-20,"trial08.csv");
+  path(-10,-5,10,-10,10,20,"trial09.csv");
+
 }
